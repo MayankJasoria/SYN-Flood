@@ -478,7 +478,7 @@ void sigint_handler(int signo) {
 int main(int argc, char** argv) {
 	
 	if(argc < 3) {
-		fprintf(stderr, "Expected 2 arguments, found %d. Terminating\n", (argc - 1));
+		fprintf(stderr, "Expected 2 arguments, found %d.\nUasge: %s <Target_IP> <Target_Port>\nTerminating.\n", (argc - 1), argv[0]);
 		return -1;
 	}
 
@@ -507,8 +507,20 @@ int main(int argc, char** argv) {
 		pcap_if_t* interfaces;
 
 		// Now get a device
-		pcap_findalldevs(&interfaces, errbuf); 
-		strcpy(dev,interfaces->name);
+		pcap_findalldevs(&interfaces, errbuf);
+
+		// chcking if loopback device can be found
+		pcap_if_t* curr = interfaces;
+		while(strcmp(curr->name, "lo") != 0) {
+			curr = curr->next;
+		}
+		if(curr != NULL) {
+			// loopback found, assign it as device name
+			strcpy(dev, curr->name);
+		} else {
+			// loopback not found, use first device as default
+			strcpy(dev,interfaces->name);
+		}
 		pcap_freealldevs(interfaces);
 
 		// Get the network address and mask
@@ -522,7 +534,10 @@ int main(int argc, char** argv) {
 		} 
 	
 		// Now we'll compile the filter expression
-		if(pcap_compile(descr, &fp, "tcp", 0, netp) == -1) {
+		char filter[16];
+		sprintf(filter, "tcp port %s", argv[2]);
+		printf("Filter: %s\n", filter);
+		if(pcap_compile(descr, &fp, filter, 0, netp) == -1) {
 			fprintf(stderr, "Error calling pcap_compile\n");
 			exit(1);
 		} 
@@ -593,7 +608,7 @@ int main(int argc, char** argv) {
 			get_dgram(datagram, &s_in, dest_ip, port);
 
 			/*********** DEBUG **************/
-			print_tcp_header_debug(datagram, 4096);
+			// print_tcp_header_debug(datagram, 4096);
 
 			int optval = 1;
 			const int* val = &optval;
