@@ -39,16 +39,16 @@ int main()
 	else
 		printf("Socket successfully binded..\n"); 
 
+	if ((listen(sockfd, 5)) != 0) { 
+		printf("Listen failed...\n"); 
+		exit(0); 
+	} 
+	else
+		printf("Server listening..\n"); 
+	len = sizeof(cli); 
+
 	// Now server is ready to listen and verification 
 	while(1) {
-		if ((listen(sockfd, 5)) != 0) { 
-			printf("Listen failed...\n"); 
-			exit(0); 
-		} 
-		else
-			printf("Server listening..\n"); 
-		len = sizeof(cli); 
-
 		// Accept the data packet from client and verification 
 		connfd = accept(sockfd, (SA*)&cli, &len); 
 		if (connfd < 0) { 

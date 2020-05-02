@@ -66,32 +66,48 @@ int generate_random_port() {
 
 /**
  * generates the checksum for a given header
- * @param ptr		The data whose checksum is to be generated
- * @param nbytes	size of the data
+ * @param buffer	The data whose checksum is to be generated
+ * @param size		size of the data
  * 
  * @return the 16-bit checksum
  */
-unsigned short generate_checksum(unsigned short *ptr, int nbytes) {
-	register long sum;
-	unsigned short oddbyte;
-	register short answer;
- 
-	sum=0;
-	while(nbytes>1) {
-		sum += *ptr++;
-		nbytes -= 2;
-	}
-	if(nbytes == 1) {
-		oddbyte = 0;
-		*((u_char*) &oddbyte) = *(u_char*) ptr;
-		sum += oddbyte;
-	}
- 
-	sum = (sum >> 16) + (sum & 0xffff);
-	sum = sum + (sum >> 16);
-	answer = (short) ~sum;
-	 
-	return answer;
+unsigned short generate_checksum(unsigned short *buffer, int size)
+{
+    unsigned long cksum=0;
+    while(size >1)
+    {
+        cksum+=*buffer++;
+        size -=sizeof(unsigned short);
+    }
+    if(size)
+        cksum += *(unsigned char*)buffer;
+
+    cksum = (cksum >> 16) + (cksum & 0xffff);
+    cksum += (cksum >>16);
+    return (unsigned short)(~cksum);
+}
+
+/**
+ * Generates the TCP checksum for the TCP header and assigns to it the value
+ * @param iph	The IP header
+ * @param tcph	The TCP header
+ * @param data	The TCP payload
+ * @param size	Size of the TCP payload
+ */
+void generate_tcp_checksum(struct iphdr* iph, struct tcphdr* tcph, char* data, int size) {
+	tcph->check = 0;
+	struct pseudo_header psd_header;
+	psd_header.dest_address = iph->daddr;
+	psd_header.source_address = iph->saddr;
+	psd_header.placeholder = 0;
+	psd_header.protocol = IPPROTO_TCP;
+	psd_header.tcp_length = htons(sizeof(struct tcphdr) + size);
+
+	char tcp_buf[65536];
+	memcpy(tcp_buf, &psd_header, sizeof(struct pseudo_header));
+	memcpy(tcp_buf + sizeof(struct pseudo_header), tcph, sizeof(struct tcphdr));
+	memcpy(tcp_buf + sizeof(struct pseudo_header) + sizeof(struct tcphdr), data, size);
+	tcph->check = generate_checksum((unsigned short*) tcp_buf, sizeof(struct pseudo_header) + sizeof(struct tcphdr) + size);
 }
 
 /**
@@ -137,18 +153,18 @@ void get_tcp_header(struct tcphdr* tcph, int dest_port) {
 	tcph->check = 0; // populate later
 	tcph->urg_ptr = 0;
 
-	// populate pseudo header for checksum calculation
-	struct pseudo_header psh;
-	psh.source_address = tcph->source;
-	psh.dest_address = tcph->dest;
-	psh.placeholder = 0;
-	psh.protocol = IPPROTO_TCP;
-	psh.tcp_length = htons(20);
+	// // populate pseudo header for checksum calculation
+	// struct pseudo_header psh;
+	// psh.source_address = tcph->source;
+	// psh.dest_address = tcph->dest;
+	// psh.placeholder = 0;
+	// psh.protocol = IPPROTO_TCP;
+	// psh.tcp_length = htons(20);
 
-	memcpy(&psh.tcp, tcph, sizeof(struct tcphdr));
+	// memcpy(&psh.tcp, tcph, sizeof(struct tcphdr));
 
-	// update tcp checksum
-	tcph->check = generate_checksum((unsigned short*) &psh, sizeof(struct pseudo_header));
+	// // update tcp checksum
+	// tcph->check = generate_checksum((unsigned short*) &psh, sizeof(struct pseudo_header));
 }
 
 /**
@@ -446,6 +462,8 @@ void get_dgram(char* dgram, struct sockaddr_in* s_in, char* dest_ip, int dest_po
 	get_ip_header(iph, dest_ip);
 
 	get_tcp_header(tcph, dest_port);
+
+	generate_tcp_checksum(iph, tcph, NULL, 0);
 
 	s_in->sin_family = AF_INET;
 	s_in->sin_port = tcph->dest;
