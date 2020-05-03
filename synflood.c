@@ -31,7 +31,8 @@ struct pseudo_header
 	struct tcphdr tcp;
 };
 
-pid_t pid = -1;
+pid_t pid1 = -1;
+pid_t pid2 = -1;
 
 /**
  * Generates a random IP address within the ranges specified below,
@@ -485,8 +486,13 @@ void sigalrm_handler(int signo) {
  * Handler for SIGINT
  */
 void sigint_handler(int signo) {
-	if(pid != -1) {
-		kill(pid, SIGINT);
+	if(pid1 != -1) {
+		kill(pid1, SIGINT);
+		int status;
+		while(wait(&status) != -1);
+	}
+	if(pid2 == -1) {
+		kill(pid2, SIGINT);
 		int status;
 		while(wait(&status) != -1);
 	}
@@ -496,7 +502,7 @@ void sigint_handler(int signo) {
 int main(int argc, char** argv) {
 	
 	if(argc < 3) {
-		fprintf(stderr, "Expected 2 arguments, found %d.\nUasge: %s <Target_IP> <Target_Port>\nTerminating.\n", (argc - 1), argv[0]);
+		fprintf(stderr, "Expected 2 arguments, found %d.\nUasge: %s <Target_Hostname/IP> <Target_Port>\nTerminating.\n", (argc - 1), argv[0]);
 		return -1;
 	}
 
@@ -507,10 +513,11 @@ int main(int argc, char** argv) {
 	// setting the seed for the random IP generator
 	srand(time(0));
 
-	if((pid = fork()) < 0) {
+	printf("Listening for packets on %s:%d\n", hostname, port);
+	if((pid1 = fork()) < 0) {
 		perror("Failed to create child process. Terminating");
 		exit(1);
-	} else if(pid == 0) {
+	} else if(pid1 == 0) {
 		/* configuring packet sniffing */
 		int i;
 		char dev[100]; 
@@ -554,9 +561,9 @@ int main(int argc, char** argv) {
 		// Now we'll compile the filter expression
 		char filter[16];
 		sprintf(filter, "tcp port %s", argv[2]);
-		printf("Filter: %s\n", filter);
+		// printf("Filter: %s\n", filter);
 		if(pcap_compile(descr, &fp, filter, 0, netp) == -1) {
-			fprintf(stderr, "Error calling pcap_compile\n");
+			fprintf(stderr, "Error calling pcap_compile in first child\n");
 			exit(1);
 		} 
 	
@@ -574,84 +581,141 @@ int main(int argc, char** argv) {
 			exit(1);
 		} 
 	} else {
-		// configuring SIGALRM handler
-		signal(SIGALRM, sigalrm_handler);
+		if((pid2 = fork()) == -1) {
+			perror("Failed to fork. Terminating");
+			exit(EXIT_FAILURE);
+		} else if(pid2 == 0) {
+			/* configuring packet sniffing */
+			int i;
+			char dev[100]; 
+			char errbuf[PCAP_ERRBUF_SIZE]; 
+			pcap_t* descr; 
+			const u_char *packet; 
+			struct pcap_pkthdr hdr;
+			struct ether_header *eptr;    /* net/ethernet.h */
+			struct bpf_program fp;        /* hold compiled program */
+			bpf_u_int32 maskp;            /* subnet mask */
+			bpf_u_int32 netp;             /* ip */
+			pcap_if_t* interfaces;
 
-		// configuring SIGINT handler
-		signal(SIGINT, sigint_handler);
+			// Now get a device
+			pcap_findalldevs(&interfaces, errbuf);
+			// use first device as default
+			strcpy(dev,interfaces->name);
+			pcap_freealldevs(interfaces);
 
-		// buffer to store destination IP address
-		char dest_ip[INET_ADDRSTRLEN];
+			// Get the network address and mask
+			pcap_lookupnet(dev, &netp, &maskp, errbuf); 
+		
+			// open device for reading in promiscuous mode
+			descr = pcap_open_live(dev, BUFSIZ, 1,-1, errbuf); 
+			if(descr == NULL) {
+				printf("pcap_open_live(): %s\n", errbuf);
+				exit(1);
+			} 
+		
+			// Now we'll compile the filter expression
+			char filter[16];
+			sprintf(filter, "tcp port %s", argv[2]);
+			// printf("Filter: %s\n", filter);
+			if(pcap_compile(descr, &fp, filter, 0, netp) == -1) {
+				fprintf(stderr, "Error calling pcap_compile in second child\n");
+				exit(1);
+			} 
+		
+			// set the filter
+			if(pcap_setfilter(descr, &fp) == -1) {
+				fprintf(stderr, "Error setting filter\n");
+				exit(1);
+			} 
+		
+			// loop for callback function
+			pcap_loop(descr, -1, libpcap_callback, NULL); 
+			
+			if(dev == NULL) {
+				fprintf(stderr, "%s\n", errbuf);
+				exit(1);
+			} 
+		} else {
+			// configuring SIGALRM handler
+			signal(SIGALRM, sigalrm_handler);
 
-		// make DNS request for destination IP address
-		struct addrinfo hints;
-		struct addrinfo* res;
+			// configuring SIGINT handler
+			signal(SIGINT, sigint_handler);
 
-		bzero(&hints, sizeof(hints));
-		hints.ai_family = AF_INET;
-		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_flags = 0;
-		hints.ai_protocol = 0;     
-		hints.ai_canonname = NULL;
-		hints.ai_addr = NULL;
-		hints.ai_next = NULL;
+			// buffer to store destination IP address
+			char dest_ip[INET_ADDRSTRLEN];
 
-		int status;
-		if((status = getaddrinfo(hostname, argv[2], &hints, &res)) != 0) {
-			printf("tcp_connect error for %s, %s: %s",
-			hostname, argv[2], gai_strerror(status));
-			return -1;
-		}
+			// make DNS request for destination IP address
+			struct addrinfo hints;
+			struct addrinfo* res;
 
-		// DNS query succeeded, we require only the first IP:PORT from the query
-		strcpy(dest_ip, inet_ntoa((struct in_addr)(((struct sockaddr_in*) res->ai_addr)->sin_addr)));
+			bzero(&hints, sizeof(hints));
+			hints.ai_family = AF_INET;
+			hints.ai_socktype = SOCK_STREAM;
+			hints.ai_flags = 0;
+			hints.ai_protocol = 0;     
+			hints.ai_canonname = NULL;
+			hints.ai_addr = NULL;
+			hints.ai_next = NULL;
 
-		// IP:PORT determined, release memory for getaddrinfo
-		freeaddrinfo(res);
-
-		// set alarm for one second
-		alarm(1);
-
-		while(1) {
-			// create raw socket
-			int raw_fd;
-			if((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0) {
-				perror("Could not create socket. Terminating");
+			int status;
+			if((status = getaddrinfo(hostname, argv[2], &hints, &res)) != 0) {
+				printf("tcp_connect error for %s, %s: %s",
+				hostname, argv[2], gai_strerror(status));
 				return -1;
 			}
 
-			// create header to send
-			char datagram[4096];
-			struct sockaddr_in s_in;
-			get_dgram(datagram, &s_in, dest_ip, port);
+			// DNS query succeeded, we require only the first IP:PORT from the query
+			strcpy(dest_ip, inet_ntoa((struct in_addr)(((struct sockaddr_in*) res->ai_addr)->sin_addr)));
 
-			/*********** DEBUG **************/
-			// print_tcp_header_debug(datagram, 4096);
+			// IP:PORT determined, release memory for getaddrinfo
+			freeaddrinfo(res);
 
-			int optval = 1;
-			const int* val = &optval;
+			// set alarm for one second
+			alarm(1);
 
-			// include new header
-			if(setsockopt(raw_fd, IPPROTO_IP, IP_HDRINCL, val, sizeof(optval)) < 0) {
-				perror("Failed to include header to the packet. Terminating");
-				return -1;
+			while(1) {
+				// create raw socket
+				int raw_fd;
+				if((raw_fd = socket(AF_INET, SOCK_RAW, IPPROTO_TCP)) < 0) {
+					perror("Could not create socket. Terminating");
+					return -1;
+				}
+
+				// create header to send
+				char datagram[4096];
+				struct sockaddr_in s_in;
+				get_dgram(datagram, &s_in, dest_ip, port);
+
+				/*********** DEBUG **************/
+				// print_tcp_header_debug(datagram, 4096);
+
+				int optval = 1;
+				const int* val = &optval;
+
+				// include new header
+				if(setsockopt(raw_fd, IPPROTO_IP, IP_HDRINCL, val, sizeof(optval)) < 0) {
+					perror("Failed to include header to the packet. Terminating");
+					return -1;
+				}
+
+				// send message (TCP SYN)
+				if(sendto(raw_fd,
+					datagram, 
+					(sizeof(struct ip) + sizeof(struct tcphdr)),
+					0,
+					(struct sockaddr*) &s_in,
+					sizeof(s_in)) < 0) {
+					perror("Failed to send TCP SYN packet");
+				}
+
+				// close file descriptor
+				close(raw_fd);
+
+				// pause till alarm or any other interrupt is received
+				pause();
 			}
-
-			// send message (TCP SYN)
-			if(sendto(raw_fd,
-				datagram, 
-				(sizeof(struct ip) + sizeof(struct tcphdr)),
-				0,
-				(struct sockaddr*) &s_in,
-				sizeof(s_in)) < 0) {
-				perror("Failed to send TCP SYN packet");
-			}
-
-			// close file descriptor
-			close(raw_fd);
-
-			// pause till alarm or any other interrupt is received
-			pause();
 		}
 	}
 
